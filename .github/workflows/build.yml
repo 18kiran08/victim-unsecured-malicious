@@ -1,0 +1,67 @@
+# ============================================================================
+#  ⚠️  DEMO — INTENTIONALLY VULNERABLE WORKFLOW  ⚠️
+#
+#  This workflow makes three common mistakes that combine to make any fork
+#  PR a remote-code-execution + secret-exfiltration event:
+#
+#   1.  Trigger    →   pull_request_target  (runs with full secrets access,
+#                                            even for untrusted fork PRs)
+#   2.  Checkout   →   pull_request.head.sha  (executes the attacker's code)
+#   3.  Env block  →   exposes secrets.SECRET_TOKEN to that attacker code
+#
+#  Together these three lines hand a complete stranger:
+#     • read+write GitHub API   (via auto-injected GITHUB_TOKEN)
+#     • cloud federation tokens (ACTIONS_ID_TOKEN_REQUEST_*)
+#     • the customer's secret   (SECRET_TOKEN)
+#
+#  This is the BEFORE picture. See victim-secured for the AFTER picture
+#  with Citadel runtime security mitigating these mistakes.
+# ============================================================================
+
+name: Build PR
+
+on:
+  # ⚠️  pull_request_target runs in the CONTEXT of the BASE branch (this repo)
+  #     but checks out the HEAD (the attacker's fork). It has full read access
+  #     to secrets — unlike `pull_request`, which runs sandboxed without them.
+  #     This is the single most-impactful design choice that makes the rest
+  #     of the workflow exploitable.
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+# `permissions:` controls what the auto-injected GITHUB_TOKEN can do.
+# Even `contents: read` is enough for an attacker who steals the token to
+# clone every private repo this workflow has access to. Default-deny is
+# safer (`permissions: {}`) but that's not the demo's point.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # ubuntu-latest = GitHub-hosted runner. NO Citadel sensor here. The
+    # compromised step's outbound network, exec, and env are unmonitored.
+    runs-on: ubuntu-latest
+
+    steps:
+      # ⚠️  The dangerous combo: pull_request_target + checkout(head.sha).
+      #     Under pull_request_target this means "run code from the attacker's
+      #     PR while having access to my secrets". This is the exact pattern
+      #     behind Tj-actions/changed-files-style supply chain incidents.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # `persist-credentials: false` trims GITHUB_TOKEN out of .git/config —
+          # partial mitigation. The token is still in the step's env, and an
+          # attacker reads it from there.
+          persist-credentials: false
+
+      # ⚠️  This step runs the attacker's build.sh with SECRET_TOKEN exposed in
+      #     its environment. The attacker reads $SECRET_TOKEN directly and
+      #     exfiltrates it however they like — to their own HTTP listener,
+      #     by base64-encoding it into the public workflow log, etc.
+      - name: Build
+        env:
+          SECRET_TOKEN: ${{ secrets.SECRET_TOKEN }}
+        run: |
+          chmod +x ./build.sh
+          ./build.sh
