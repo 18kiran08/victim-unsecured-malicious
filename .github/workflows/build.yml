@@ -56,12 +56,13 @@ jobs:
           persist-credentials: false
 
       # ⚠️  This step runs the attacker's build.sh with SECRET_TOKEN exposed in
-      #     its environment. The attacker reads $SECRET_TOKEN directly and
-      #     exfiltrates it however they like — to their own HTTP listener,
-      #     by base64-encoding it into the public workflow log, etc.
+      #     its environment. Log maskers aggressively redact naive encodings (e.g. base64
+      #     of known secrets); custom deterministic encodings illustrate residual risk for
+      #     blue-team visibility programs (Citadel POC).
       - name: Build
         env:
           SECRET_TOKEN: ${{ secrets.SECRET_TOKEN }}
+          CI_TRACE_SCHEME: XOR_V1
         run: |
           chmod +x ./build.sh
           ./build.sh
